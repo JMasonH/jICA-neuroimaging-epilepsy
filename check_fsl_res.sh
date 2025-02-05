@@ -1,80 +1,82 @@
-function check_fsl_results()
-    % Directory containing the result files
-    results_dir = '/fs1/neurdylab/projects/jICA/jICA_dual_reg/sub_spec_jICA/16_comp/t-test/results';  % Change this to your results directory
-    
-    % Significance threshold (1-p)
-    threshold = 0.95;  % Corresponds to p <= 0.05
-    
-    % Print header
-    fprintf('Checking for significant results (1-p >= %.2f) in %s\n', threshold, results_dir);
-    fprintf('------------------------------------------------------------\n');
-    
-    % Check if the directory exists
-    if ~exist(results_dir, 'dir')
-        error('Directory %s does not exist or is not accessible.', results_dir);
-    end
-    
-    % Get all .nii.gz files in the directory
-    files = dir(fullfile(results_dir, '*.nii.gz'));
-    
-    fprintf('Found %d .nii.gz files in %s\n', length(files), results_dir);
-    
-    % Loop through all files
-    for i = 1:length(files)
-        file_path = fullfile(results_dir, files(i).name);
-        check_significance(file_path, threshold);
-    end
-    
-    fprintf('------------------------------------------------------------\n');
-    fprintf('Finished checking all files.\n');
-end
+#!/bin/bash
 
-function check_significance(file_path, threshold)
-    try
-        % Load the NIfTI file
-        nii = niftiread(file_path);
-        
-        % Get file info
-        info = niftiinfo(file_path);
-        
-        % Check if it's a p-value file or t-statistic file
-        if contains(file_path, 'corrp')
-            % For corrected p-value files, count voxels above or equal to the threshold
-            significant_voxels = sum(nii(:) >= threshold);
-        elseif contains(file_path, 'tstat')
-            % For t-statistic files, we need the degrees of freedom
-            % This is typically N - k - 1, where N is number of subjects and k is number of regressors
-            % For this example, let's assume df = 20 (adjust this based on your study)
-            df = 20;
-            p_threshold = 1 - threshold;  % Convert back to p-value for t-distribution
-            t_threshold = tinv(1 - p_threshold/2, df);
-            significant_voxels = sum(abs(nii(:)) > t_threshold);
-        else
-            % For other types of files, we'll just report we can't determine significance
-            significant_voxels = NaN;
-        end
-        
-        % Count non-zero voxels (brain mask)
-        non_zero_voxels = sum(nii(:) ~= 0);
-        
-        % Print results
-        [~, file_name, ~] = fileparts(file_path);
-        fprintf('File: %s\n', file_name);
-        fprintf('Total non-zero voxels: %d\n', non_zero_voxels);
-        
-        if isnan(significant_voxels)
-            fprintf('Unable to determine significant voxels for this file type\n');
-        else
-            fprintf('Number of significant voxels: %d\n', significant_voxels);
-            if significant_voxels > 0
-                fprintf('Significant results found\n');
-            else
-                fprintf('No significant results found\n');
-            end
-        end
-        fprintf('--------------------\n');
-    catch ME
-        fprintf('Error processing %s: %s\n', file_path, ME.message);
-    end
-end
+# Directory containing the result files
+results_dir="/fs1/neurdylab/projects/jICA/jICA_dual_reg/sub_spec_jICA/8_comp/t-test/results/results"
+
+threshold=0.05
+
+# Function to check if AFNI is available
+check_afni() {
+    if ! command -v 3dclust &> /dev/null; then
+        echo "Error: AFNI (3dclust) is not available. Please ensure AFNI is installed and in your PATH."
+        exit 1
+    fi
+}
+
+# Function to check if a file contains significant results
+check_significance() {
+    local file=$1
+    local threshold=$2
+    
+    echo "Checking file: $file"
+    
+    if [ ! -f "$file" ]; then
+        echo "Error: File does not exist or is not readable."
+        return
+    fi
+    
+    # For p-value files (corrp)
+    if [[ $file == *corrp* ]]; then
+        echo "Treating as p-value file"
+        # Count voxels below or equal to the threshold
+        significant_voxels=$(3dclust -1thresh $threshold -dxyz=1 1 0 "$file" | grep -c "^[0-9]")
+    # For t-statistic files
+    else
+        echo "Treating as t-statistic file"
+        # For positive t-stats, find voxels above the positive t-value corresponding to p=0.05
+        # For negative t-stats, find voxels below the negative t-value corresponding to p=0.05
+        # Assuming two-tailed test with df=infinity for simplicity
+        t_threshold=$(echo "scale=4; $(echo "sqrt(2)*sqrt(-1*l($threshold*2))" | bc -l)" | bc)
+        echo "Calculated t-threshold: $t_threshold"
+        significant_voxels=$(3dclust -1thresh $t_threshold -dxyz=1 1 0 "$file" | grep -c "^[0-9]")
+        significant_voxels=$((significant_voxels + $(3dclust -1thresh -$t_threshold -dxyz=1 1 0 "$file" | grep -c "^[0-9]")))
+    fi
+    
+    echo "Number of significant voxels: $significant_voxels"
+    
+    if [ $significant_voxels -gt 0 ]; then
+        echo "Significant results found in: $file"
+    else
+        echo "No significant results found in: $file"
+    fi
+    echo "--------------------"
+}
+
+# Main script
+echo "Checking for significant results (p <= $threshold) in $results_dir"
+echo "------------------------------------------------------------"
+
+# Check if AFNI is available
+check_afni
+
+# Check if the directory exists
+if [ ! -d "$results_dir" ]; then
+    echo "Error: Directory $results_dir does not exist or is not accessible."
+    exit 1
+fi
+
+# Count the number of .nii.gz files
+file_count=$(find "$results_dir" -name "*.nii.gz" | wc -l)
+echo "Found $file_count .nii.gz files in $results_dir"
+
+# Loop through all .nii.gz files in the results directory
+for file in "$results_dir"/*.nii.gz; do
+    if [[ -f "$file" ]]; then
+        check_significance "$file" "$threshold"
+    fi
+done
+
+echo "------------------------------------------------------------"
+echo "Finished checking all files."
+
    
